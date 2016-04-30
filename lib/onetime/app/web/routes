@@ -2,6 +2,9 @@
 GET   /                                          Onetime::App#index
 POST  /                                          Onetime::App#create_secret
 
+GET   /incoming                                  Onetime::App#incoming
+POST  /incoming                                  Onetime::App#create_incoming
+
 GET   /feedback                                  Onetime::App#feedback
 POST  /feedback                                  Onetime::App#receive_feedback
 
@@ -17,6 +20,9 @@ GET   /shared/:key                               Onetime::App#secret_uri
 POST  /shared/:key                               Onetime::App#secret_uri
 GET   /secret/:key                               Onetime::App#secret_uri
 POST  /secret/:key                               Onetime::App#secret_uri
+
+GET   /private/:key/burn                         Onetime::App#burn_secret
+POST  /private/:key/burn                         Onetime::App#burn_secret
 
 GET   /info/privacy                              Onetime::App::Info#privacy
 GET   /info/security                             Onetime::App::Info#security
@@ -48,7 +54,9 @@ POST  /account/subdomain                         Onetime::App#update_subdomain
 GET   /contributor                               Onetime::App#contributors
 POST  /contributor                               Onetime::App#contributors
 
+GET   /translations                              Onetime::App#translations
 
+#GET   /email                                     Onetime::App#test_send_email
 
 GET   /404                                       Onetime::App#not_found
 GET   /500                                       Onetime::App#server_error

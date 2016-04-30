@@ -23,14 +23,18 @@ module Onetime
       self.view_namespace = Onetime::App::Views
       self.view_path = './app/web/views'
       attr_reader :req, :plan, :is_paid
-      attr_accessor :sess, :cust, :messages, :form_fields
-      def initialize req=nil, sess=nil, cust=nil, *args
-        @req, @sess, @cust = req, sess, cust
+      attr_accessor :sess, :cust, :locale, :messages, :form_fields
+      def initialize req=nil, sess=nil, cust=nil, locale=nil, *args
+        @req, @sess, @cust, @locale = req, sess, cust, locale
+        @locale ||= req.env['ots.locale'] || OT.conf[:locales].first.to_s || 'en'
         @messages = { :info => [], :error => [] }
         self[:js], self[:css] = [], []
+        self[:is_default_locale] = OT.conf[:locales].first.to_s == locale
+        self[:supported_locales] = OT.conf[:locales]
+        self[:unsupported_locales] = OT.conf[:unsupported_locales]
         self[:monitored_link] = false
-        self[:description] = "Keep sensitive information out of your chat logs and email. Share a secret link that is available only one time."
-        self[:keywords] = "secret,password generator,share a secret,onetime"
+        self[:description] = i18n[:COMMON][:description]
+        self[:keywords] = i18n[:COMMON][:keywords]
         self[:ot_version] = OT::VERSION.inspect
         self[:ot_version_id] = self[:ot_version].gibbler.short
         self[:authenticated] = sess.authenticated? if sess
@@ -49,7 +53,7 @@ module Onetime
         self[:jsvars] << jsvar(:custid, cust.custid)
         self[:jsvars] << jsvar(:email, cust.email)
         self[:display_links] = true
-        self[:display_options] = sess.authenticated?
+        self[:display_options] = true# sess.authenticated?
         self[:display_recipients] = sess.authenticated?
         self[:display_masthead] = true
         if self[:is_subdomain]
@@ -86,7 +90,7 @@ module Onetime
             self[:via_test] = !sess.referrer.match(/ot.com/).nil?
           end
           if cust.has_key?(:verified) && cust.verified.to_s != 'true' && self.class != Onetime::App::Views::Shared
-            add_message "A verification was sent to #{cust.custid}."
+            add_message i18n[:COMMON][:verification_sent_to] + " #{cust.custid}."
           else
             add_error sess.error_message!
           end
@@ -97,6 +101,50 @@ module Onetime
         @plan ||= Onetime::Plan.plan('anonymous')
         @is_paid = plan.paid?
         init *args if respond_to? :init
+      end
+      def i18n
+        pagename = self.class.name.split('::').last.downcase.to_sym
+        @i18n ||= {
+          locale: self.locale,
+          default: OT.conf[:locales].first.to_s,
+          page: OT.locales[self.locale][:web][pagename],
+          COMMON: OT.locales[self.locale][:web][:COMMON]
+        }
+      end
+      def setup_plan_variables
+        Onetime::Plan.plans.each_pair do |planid,plan|
+          self[plan.planid] = {
+            :price => plan.price.zero? ? 'Free' : plan.calculated_price,
+            :original_price => plan.price.to_i,
+            :ttl => plan.options[:ttl].in_days.to_i,
+            :size => plan.options[:size].to_i,
+            :api => plan.options[:api] ? 'Yes' : 'No',
+            :name => plan.options[:name],
+            :planid => planid
+          }
+          self[plan.planid][:price_adjustment] = (plan.calculated_price.to_i != plan.price.to_i)
+        end
+        @plans = if self[:via_test] || self[:via_hn]
+          [:personal_hn, :professional_v1, :agency_v1]
+        elsif self[:via_reddit]
+          [:personal_reddit, :professional_v1, :agency_v1]
+        else
+          [:individual_v1, :professional_v1, :agency_v1]
+        end
+        unless cust.anonymous?
+          plan_idx = case cust.planid
+          when /personal/
+            0
+          when /professional/
+            1
+          when /agency/
+            2
+          end
+          @plans[plan_idx] = cust.planid unless plan_idx.nil?
+        end
+        self[:default_plan] = self[@plans.first.to_s] || self['individual_v1']
+        OT.ld self[:default_plan].to_json
+        self[:planid] = self[:default_plan][:planid]
       end
       def get_split_test_values testname
         varname = "#{testname}_group"
@@ -163,6 +211,17 @@ module Onetime
           self[:title] = "Share a secret"
           self[:monitored_link] = !self[:is_subdomain]
           self[:with_analytics] = true
+        end
+      end
+      class Incoming < Onetime::App::View
+        include CreateSecretElements
+        def init *args
+          self[:title] = "Share a secret"
+          self[:monitored_link] = !self[:is_subdomain]
+          self[:with_analytics] = true
+          self[:incoming_recipient] = OT.conf[:incoming][:email]
+          self[:display_feedback] = self[:display_icons] = false
+          self[:display_masthead] = self[:display_links] = false
         end
       end
       module Docs
@@ -242,11 +301,14 @@ module Onetime
           self[:title] = "You saved a secret"
           self[:body_class] = :generate
           self[:metadata_key] = metadata.key
+          self[:metadata_shortkey] = metadata.shortkey
           self[:secret_key] = metadata.secret_key
+          self[:secret_shortkey] = metadata.secret_shortkey
           self[:recipients] = metadata.recipients
           self[:display_feedback] = false
           self[:no_cache] = true
           ttl = metadata.ttl.to_i  # the real ttl is always a whole number
+          self[:created_date_utc] = epochformat(metadata.created.to_i)
           self[:expiration_stamp] = if ttl <= 1.minute
             '%d seconds' % ttl
           elsif ttl <= 1.hour
@@ -258,11 +320,14 @@ module Onetime
           end
           secret = metadata.load_secret
           if secret.nil?
-            self[:is_received] = true
+            self[:is_received] = metadata.state?(:received)
+            self[:is_burned] = metadata.state?(:burned)
+            self[:is_destroyed] = self[:is_burned] || self[:is_received]
             self[:received_date] = natural_time(metadata.received.to_i || 0)
+            self[:received_date_utc] = epochformat(metadata.received.to_i || 0)
+            self[:burned_date] = natural_time(   metadata.burned.to_i || 0)
+            self[:burned_date_utc] = epochformat(metadata.burned.to_i || 0)
           else
-            self[:is_received] = secret.state?(:received)
-            self[:received_date] = natural_time(metadata.received.to_i || 0)
             self[:maxviews] = secret.maxviews
             self[:has_maxviews] = true if self[:maxviews] > 1
             self[:view_count] = secret.view_count
@@ -273,8 +338,8 @@ module Onetime
               self[:truncated] = secret.truncated
             end
           end
-          self[:show_secret] = !secret.nil? && !(metadata.state?(:viewed) || metadata.state?(:received))
-          self[:show_secret_link] = !metadata.state?(:received) && (self[:show_secret] || metadata.owner?(cust)) && self[:recipients].nil?
+          self[:show_secret] = !secret.nil? && !(metadata.state?(:viewed) || metadata.state?(:received) || metadata.state?(:burned))
+          self[:show_secret_link] = !(metadata.state?(:received) || metadata.state?(:burned)) && (self[:show_secret] || metadata.owner?(cust)) && self[:recipients].nil?
           self[:show_metadata_link] = metadata.state?(:new)
           self[:show_metadata] = !metadata.state?(:viewed) || metadata.owner?(cust)
         end
@@ -284,12 +349,60 @@ module Onetime
         def metadata_uri
           [baseuri, :private, self[:metadata_key]].join('/')
         end
+        def burn_uri
+          [baseuri, :private, self[:metadata_key], 'burn'].join('/')
+        end
         def display_lines
           ret = self[:secret_value].to_s.scan(/\n/).size + 2
           ret = ret > 20 ? 20 : ret
         end
         def one_liner
           self[:secret_value].to_s.scan(/\n/).size.zero?
+        end
+      end
+      class Burn < Onetime::App::View
+        def init metadata
+          self[:title] = "You saved a secret"
+          self[:body_class] = :generate
+          self[:metadata_key] = metadata.key
+          self[:metadata_shortkey] = metadata.shortkey
+          self[:secret_key] = metadata.secret_key
+          self[:secret_shortkey] = metadata.secret_shortkey
+          self[:state] = metadata.state
+          self[:recipients] = metadata.recipients
+          self[:display_feedback] = false
+          self[:no_cache] = true
+          self[:show_metadata] = !metadata.state?(:viewed) || metadata.owner?(cust)
+          secret = metadata.load_secret
+          ttl = metadata.ttl.to_i  # the real ttl is always a whole number
+          self[:expiration_stamp] = if ttl <= 1.minute
+            '%d seconds' % ttl
+          elsif ttl <= 1.hour
+            '%d minutes' % ttl.in_minutes
+          elsif ttl <= 1.day
+            '%d hours' % ttl.in_hours
+          else
+            '%d days' % ttl.in_days
+          end
+          if secret.nil?
+            self[:is_received] = metadata.state?(:received)
+            self[:is_burned] = metadata.state?(:burned)
+            self[:is_destroyed] = self[:is_burned] || self[:is_received]
+            self[:received_date] = natural_time(metadata.received.to_i || 0)
+            self[:received_date_utc] = epochformat(metadata.received.to_i || 0)
+            self[:burned_date] = natural_time(   metadata.burned.to_i || 0)
+            self[:burned_date_utc] = epochformat(metadata.burned.to_i || 0)
+          else
+            if secret.viewable?
+              self[:has_passphrase] = !secret.passphrase.to_s.empty?
+              self[:can_decrypt] = secret.can_decrypt?
+              self[:secret_value] = secret.decrypted_value if self[:can_decrypt]
+              self[:truncated] = secret.truncated
+            end
+          end
+        end
+        def metadata_uri
+          [baseuri, :private, self[:metadata_key]].join('/')
         end
       end
       class Forgot < Onetime::App::View
@@ -335,9 +448,6 @@ module Onetime
               :is_paid => plan.paid?,
               :planid => req.params[:planid]
             }
-            if self[:plan][:is_paid]
-              add_message "Good news! This plan is free until February 1st."
-            end
           else
             add_error "Unknown plan"
           end
@@ -349,39 +459,7 @@ module Onetime
           self[:body_class] = :pricing
           self[:monitored_link] = true
           self[:with_analytics] = true
-          Onetime::Plan.plans.each_pair do |planid,plan|
-            self[plan.planid] = {
-              :price => plan.price.zero? ? 'Free' : plan.calculated_price,
-              :original_price => plan.price.to_i,
-              :ttl => plan.options[:ttl].in_days.to_i,
-              :size => plan.options[:size].to_bytes.to_i,
-              :api => plan.options[:api] ? 'Yes' : 'No',
-              :name => plan.options[:name],
-              :planid => planid
-            }
-            self[plan.planid][:price_adjustment] = (plan.calculated_price.to_i != plan.price.to_i)
-          end
-          @plans = if self[:via_test] || self[:via_hn]
-            [:personal_hn, :professional_v1, :agency_v1]
-          elsif self[:via_reddit]
-            [:personal_reddit, :professional_v1, :agency_v1]
-          else
-            [:individual_v1, :professional_v1, :agency_v1]
-          end
-          unless cust.anonymous?
-            plan_idx = case cust.planid
-            when /personal/
-              0
-            when /professional/
-              1
-            when /agency/
-              2
-            end
-            @plans[plan_idx] = cust.planid unless plan_idx.nil?
-          end
-          self[:default_plan] = self[@plans.first.to_s] || self['individual_v1']
-          OT.ld self[:default_plan].to_json
-          self[:planid] = self[:default_plan][:planid]
+          setup_plan_variables
         end
         def plan1;  self[@plans[0].to_s]; end
         def plan2;  self[@plans[1].to_s]; end
@@ -398,13 +476,22 @@ module Onetime
           self[:metadata] = cust.metadata.collect do |m|
             { :uri => private_uri(m),
               :stamp => natural_time(m.updated),
+              :updated => epochformat(m.updated),
               :key => m.key,
-              :shortkey => m.key.slice(0,12),
+              :shortkey => m.key.slice(0,8),
+              # Backwards compatible for metadata created prior to Dec 5th, 2014 (14 days)
+              :secret_shortkey => m.secret_shortkey.to_s.empty? ? nil : m.secret_shortkey,
               :recipients => m.recipients,
-              :is_received => m.state?(:received) }
+              :is_received => m.state?(:received),
+              :is_burned => m.state?(:burned),
+              :is_destroyed => (m.state?(:received) || m.state?(:burned))}
           end.compact
-
+          self[:received],self[:notreceived] =
+            *self[:metadata].partition{ |m| m[:is_destroyed] }
+          self[:received].sort!{ |a,b| b[:updated] <=> a[:updated] }
           self[:has_secrets] = !self[:metadata].empty?
+          self[:has_received] = !self[:received].empty?
+          self[:has_notreceived] = !self[:notreceived].empty?
         end
       end
       class Account < Onetime::App::View
@@ -444,6 +531,15 @@ module Onetime
       class About < Onetime::App::View
         def init *args
           self[:title] = "About Us"
+          self[:body_class] = :info
+          self[:monitored_link] = true
+          self[:with_analytics] = true
+          setup_plan_variables
+        end
+      end
+      class Translations < Onetime::App::View
+        def init *args
+          self[:title] = "Help us translate"
           self[:body_class] = :info
           self[:monitored_link] = true
           self[:with_analytics] = true

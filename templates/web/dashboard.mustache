@@ -5,8 +5,8 @@
     <div class="span12">
 
       <ul class="nav nav-tabs" id="contentTab">
-        <li class="active"><a href="#home">Home</a></li>
-        <li><a href="#recent">Recent Secrets <span class="badge">{{metadata.size}}</span></a></li>
+        <li class="active"><a href="#home">{{i18n.COMMON.title_home}}</a></li>
+        <li><a href="#recent">{{i18n.COMMON.title_recent_secrets}} <span class="badge">{{metadata.size}}</span></a></li>
       </ul>
 
       <div class="tab-content">
@@ -28,7 +28,7 @@
               <div>Share Secret</div>
             </div>
           </div>
-          <a href="#" class="secretToggle">Share a secret</a>
+          <a href="#" class="secretToggle">{{i18n.COMMON.share_a_secret}}</a>
           {{/new_account}}
 
           {{>partial/create_secret_form}}
@@ -37,26 +37,51 @@
         <div class="tab-pane" id="recent">
 
           {{#has_secrets}}
-          <h3>Recent secrets</h3>
+
+          <h3>{{i18n.page.title_not_received}}</h3>
+          {{#has_notreceived}}
           <ul>
-          {{#metadata}}
-            <li>
-              <a href="{{uri}}" class="{{#is_received}}strikethrough italic lighter{{/is_received}} {{^is_received}}nounderline{{/is_received}}">
-              {{shortkey}} {{#recipients}}{{to_s}}{{/recipients}}
-              </a>
-              - <em class="lighter">{{stamp}}</em></li>
-          {{/metadata}}
+          {{#notreceived}}
+            {{>partial/li_metadata}}
+          {{/notreceived}}
           </ul>
+          {{/has_notreceived}}
+          {{^has_notreceived}}
+          <p class="intro2"><em>Go on then. <a href="/">{{i18n.COMMON.share_a_secret}}!</a></em></p>
+          {{/has_notreceived}}
+
+
+          <h3>{{i18n.page.title_received}}</h3>
+          {{#has_received}}
+          <ul>
+          {{#received}}
+            {{>partial/li_metadata}}
+          {{/received}}
+          </ul>
+          {{/has_received}}
+          {{^has_received}}
+          <em>{{i18n.COMMON.word_none}}</em>
+          {{/has_received}}
           {{/has_secrets}}
 
           {{^has_secrets}}
-          <h3>No Recent secrets</h3>
-          <p class="intro2"><em>Go on then. Share a secret!</em></p>
+          <h3>{{i18n.page.title_no_recent_secrets}}</h3>
+          <p class="intro2"><em>Go on then. <a href="/">{{i18n.COMMON.share_a_secret}}!</a></em></p>
           {{/has_secrets}}
 
         </div>
       </div>
     </div>
   </div>
-
 {{>footer}}
+
+
+<script>
+$(function() {
+  var tab = (window.location.hash || 'home-tab').toLowerCase().split('-tab')[0];
+  var allowed = ['#home', '#recent'];
+  if (allowed.indexOf(tab) >= 0) {
+    $('#contentTab a[href="'+tab+'"]').tab('show');
+  }
+});
+</script>

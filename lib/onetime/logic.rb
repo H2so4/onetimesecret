@@ -41,9 +41,9 @@ module Onetime
         MOBILE_REGEX = /^\+?\d{9,16}$/
         EMAIL_REGEX = %r{^(?:[_a-z0-9-]+)(\.[_a-z0-9-]+)*@([a-z0-9-]+)(\.[a-zA-Z0-9\-\.]+)*(\.[a-z]{2,4})$}i
       end
-      attr_reader :sess, :cust, :params, :processed_params, :plan
-      def initialize(sess, cust, params=nil)
-        @sess, @cust, @params = sess, cust, params
+      attr_reader :sess, :cust, :params, :locale, :processed_params, :plan
+      def initialize(sess, cust, params=nil, locale=nil)
+        @sess, @cust, @params, @locale = sess, cust, params, locale
         @processed_params ||= {}
         process_params if respond_to?(:process_params) && @params
         process_generic_params if @params
@@ -133,7 +133,7 @@ module Onetime
         secret.verification = true
         secret.custid = cust.custid
         secret.save
-        view = OT::Email::Welcome.new cust, secret
+        view = OT::Email::Welcome.new cust, locale, secret
         view.deliver_email
         if OT.conf[:colonels].member?(cust.custid)
           cust.role = :colonel
@@ -258,13 +258,14 @@ module Onetime
         secret = OT::Secret.create @custid, [@custid]
         secret.ttl = 24.hours
         secret.verification = true
-        view = OT::Email::PasswordRequest.new cust, secret
+        view = OT::Email::PasswordRequest.new cust, locale, secret
         ret = view.deliver_email
-        if ret.code == 200
-          sess.set_info_message "We sent instructions to #{cust.custid}"
-        else
-          sess.set_info_message "Couldn't send the notification. Let Delano know."
-        end
+        sess.set_info_message "We sent instructions to #{cust.custid}"
+        #if ret.code == 200
+        #  sess.set_info_message "We sent instructions to #{cust.custid}"
+        #else
+        #  sess.set_info_message "Couldn't send the notification. Let Delano know."
+        #end
       end
     end
 
@@ -415,7 +416,7 @@ module Onetime
         @ttl = params[:ttl].to_i
         @ttl = 7.days if @ttl <= 0
         @ttl = 5.minutes if @ttl < 1.minutes
-        @ttl = plan.options[:ttl] if @ttl > plan.options[:ttl]
+        @ttl = plan.options[:ttl] if plan.options[:ttl] > @ttl
         @maxviews = params[:maxviews].to_i
         @maxviews = 1 if @maxviews < 1
         @maxviews = (plan.options[:maxviews] || 100) if @maxviews > (plan.options[:maxviews] || 100)  # TODO
@@ -455,6 +456,7 @@ module Onetime
         end
         secret.encrypt_value secret_value, :size => plan.options[:size]
         metadata.ttl, secret.ttl = ttl, ttl
+        metadata.secret_shortkey = secret.shortkey
         secret.maxviews = maxviews
         secret.save
         metadata.save
@@ -465,7 +467,7 @@ module Onetime
           end
           OT::Customer.global.incr :secrets_created
           unless recipient.nil? || recipient.empty?
-            metadata.deliver_by_email cust, secret, recipient.first
+            metadata.deliver_by_email cust, locale, secret, recipient.first
           end
           OT::Logic.stathat_count("Secrets", 1)
         else
@@ -477,6 +479,63 @@ module Onetime
       end
       private
       def form_fields
+      end
+    end
+
+    class CreateIncoming < OT::Logic::Base
+      attr_reader :passphrase, :secret_value, :ticketno
+      attr_reader :metadata, :secret, :recipient, :ttl
+      def process_params
+        @ttl = 7.days
+        @secret_value = params[:secret]
+        @ticketno = params[:ticketno].strip
+        @passphrase = OT.conf[:incoming][:passphrase].strip
+        params[:recipient] = [OT.conf[:incoming][:email]]
+        r = Regexp.new(/\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,4}\b/)
+        @recipient = params[:recipient].collect { |email_address|
+          next if email_address.to_s.empty?
+          next if email_address =~ /#{Regexp.escape(OT.conf[:text][:paid_recipient_text])}/
+          #unless valid_email?(email_address) #|| valid_mobile?(email_address)
+          #  raise_form_error "Recipient must be an email address."
+          #end
+          email_address.scan(r).uniq.first
+        }.compact.uniq
+      end
+      def raise_concerns
+        limit_action :create_secret
+        limit_action :email_recipient unless recipient.empty?
+        regex = Regexp.new(OT.conf[:incoming][:regex] || '\A[a-zA-Z0-9]{1,32}\z')
+        if secret_value.to_s.empty?
+          raise_form_error "You did not provide any information to share"
+        end
+        if ticketno.to_s.empty? || !ticketno.match(regex)
+          raise_form_error "You must provide a valid ticket number"
+        end
+      end
+      def process
+        @metadata, @secret = Onetime::Secret.spawn_pair cust.custid, [sess.external_identifier]
+        if !passphrase.empty?
+          secret.update_passphrase passphrase
+          metadata.passphrase = secret.passphrase
+        end
+        secret.encrypt_value secret_value, :size => plan.options[:size]
+        metadata.ttl, secret.ttl = ttl, ttl
+        metadata.secret_shortkey = secret.shortkey
+        secret.save
+        metadata.save
+        if metadata.valid? && secret.valid?
+          unless cust.anonymous?
+            cust.add_metadata metadata
+            cust.incr :secrets_created
+          end
+          OT::Customer.global.incr :secrets_created
+          unless recipient.nil? || recipient.empty?
+            metadata.deliver_by_email cust, locale, secret, recipient.first, OT::Email::IncomingSupport, ticketno
+          end
+          OT::Logic.stathat_count("Secrets", 1)
+        else
+          raise_form_error "Could not store your secret"
+        end
       end
     end
 
@@ -536,6 +595,51 @@ module Onetime
       end
       def process
         @secret = @metadata.load_secret
+      end
+    end
+
+    class BurnSecret < OT::Logic::Base
+      attr_reader :key, :passphrase, :continue
+      attr_reader :metadata, :secret, :correct_passphrase, :burn_secret
+      def process_params
+        @key = params[:key].to_s
+        @metadata = Onetime::Metadata.load key
+        @passphrase = params[:passphrase].to_s
+        @continue = params[:continue] == 'true'
+      end
+      def raise_concerns
+        limit_action :burn_secret
+        raise OT::MissingSecret if metadata.nil?
+      end
+      def process
+        @secret = @metadata.load_secret
+        if secret
+          @correct_passphrase = !secret.has_passphrase? || secret.passphrase?(passphrase)
+          @burn_secret = secret.viewable? && correct_passphrase && continue
+          owner = secret.load_customer
+          if burn_secret
+            owner.incr :secrets_burned unless owner.anonymous?
+            OT::Customer.global.incr :secrets_burned
+            secret.burned!
+            OT::Logic.stathat_count('Burned Secrets', 1)
+          elsif !correct_passphrase
+            limit_action :failed_passphrase if secret.has_passphrase?
+            # do nothing
+          end
+        end
+      end
+    end
+
+    class ShowRecentMetadata < OT::Logic::Base
+      attr_reader :metadata
+      def process_params
+        @metadata = cust.metadata
+      end
+      def raise_concerns
+        limit_action :show_metadata
+        raise OT::MissingSecret if metadata.nil?
+      end
+      def process
       end
     end
 

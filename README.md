@@ -1,4 +1,4 @@
-# ONE-TIME SECRET - v0.8 (2013-01-01)
+# ONE-TIME SECRET - v0.9.1 (2015-04-23)
 
 *Keep sensitive info out of your email & chat logs.*
 
@@ -23,7 +23,7 @@ When you send people sensitive info like passwords and private links via email o
     # DEBIAN
     $ sudo apt-get update
     $ sudo apt-get install build-essential
-    $ sudo apt-get install libyaml-dev libevent-dev zlib1g zlib1g-dev openssl libssl-dev libxml2 libreadline5-dev
+    $ sudo apt-get install ntp libyaml-dev libevent-dev zlib1g zlib1g-dev openssl libssl-dev libxml2 libreadline5-dev
     $ mkdir ~/sources
 
     # CENTOS
@@ -46,9 +46,9 @@ When you send people sensitive info like passwords and private links via email o
 ## Install Redis 2.6
 
     $ cd ~/sources
-    $ curl -O http://redis.googlecode.com/files/redis-2.6.9.tar.gz
-    $ tar zxf redis-2.6.9.tar.gz
-    $ cd redis-2.6.9
+    $ curl -O http://download.redis.io/releases/redis-2.6.17.tar.gz
+    $ tar zxf redis-2.6.17.tar.gz
+    $ cd redis-2.6.17
     $ make
     $ sudo make install
 
@@ -73,11 +73,28 @@ When you send people sensitive info like passwords and private links via email o
     $ redis-server /etc/onetime/redis.conf
     $ bundle exec thin -e dev -R config.ru -p 7143 start
 
+
 ## Generating a global secret
 
 We include a global secret in the encryption key so it needs to be long and secure. One approach for generating a secret:
 
-    history | openssl sha1
+    dd if=/dev/urandom bs=20 count=1 | openssl sha1
 
 
+## Upgrading to 0.9
 
+Upgrading to 0.9 should be seemless, however b/c of new functionality you will need to add the following to your config file:
+
+    :incoming:
+      :enabled: true
+      :email: example@onetimesecret.com
+      :passphrase: CHANGEME
+      :regex: \A[a-zA-Z0-9]{6}\z
+    :locales:
+      - en
+      - es
+
+You run your configuration from `/etc/onetime/config` you will also need to copy the `./etc/locale` directory to `/etc/onetime/locale`:
+
+    $ cd /path/2/onetimesecret
+    $ sudo cp -r etc/locale /etc/onetime/

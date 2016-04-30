@@ -35,13 +35,16 @@ module Onetime
       @age ||= Time.now.utc.to_i-updated
       @age
     end
+    def shortkey
+      key.slice(0,6)
+    end
     def anonymous?
       custid.to_s == 'anon'
     end
     def owner? cust
       !anonymous? && (cust.is_a?(OT::Customer) ? cust.custid : cust).to_s == custid.to_s
     end
-    def deliver_by_email cust, secret, eaddrs
+    def deliver_by_email cust, locale, secret, eaddrs, template=OT::Email::SecretLink, ticketno=null
       if eaddrs.nil? || eaddrs.empty?
         OT.info "[deliver-by-email] No addresses specified"
       end
@@ -50,17 +53,12 @@ module Onetime
       self.recipients = eaddrs_safe.join(', ')
       OT.ld "SECRET HAS MORE THAN ONE RECIPIENT #{eaddrs.size}" if eaddrs.size > 1
       eaddrs.each do |email_address|
-        view = OT::Email::SecretLink.new cust, secret, email_address
+        view = template.new cust, locale, secret, email_address
+        view.ticketno = ticketno if (ticketno)
         view.emailer.from = cust.custid
         view.emailer.fromname = ''
         ret = view.deliver_email
-        if ret.code == 200
-          cust.incr :emails_sent
-          OT::Customer.global.incr :emails_sent
-        else
-          OT.info "Error sending email: #{ret}"
-        end
-        break
+        break # force just a single recipient
       end
     end
     def older_than? seconds
@@ -80,6 +78,12 @@ module Onetime
       return unless state?(:new) || state?(:viewed)
       @state = :received
       update_fields :state => :received, :received => Time.now.utc.to_i, :secret_key => nil
+    end
+    def burned!
+      # Make sure we don't go from :shared to :viewed
+      return unless state?(:new) || state?(:viewed)
+      @state = :burned
+      update_fields :state => :burned, :burned => Time.now.utc.to_i, :secret_key => nil
     end
     def state? guess
       state.to_s == guess.to_s

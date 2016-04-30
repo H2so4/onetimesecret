@@ -16,23 +16,51 @@
   :from: CHANGEME@example.com
   :fromname: CHANGEME
   :bcc:
+:incoming:
+  :enabled: true
+  :email: example@onetimesecret.com
+  :passphrase: CHANGEME
+  :regex: \A[a-zA-Z0-9]{6}\z
+:locales:
+  - en
+  - es
+  - de
+  - nl
+:unsupported_locales:
+  - ru
+  - fr
+  - pt
+  - jp
+  - pt
+#:emailer:
+#  :mode: :smtp
+#  :from: delano@onetimesecret.com
+#  :host: localhost
+#  :port: 587
+#  :tls: false
+#  :user:
+#  :pass:
+#  :auth:
 :stathat:
   :enabled: false
   :apikey: CHANGEME
+  :default_chart: CHANGEME
 :text:
-  :feedback: 'Have a question or comment?.'
   :nonpaid_recipient_text: 'You need to create an account!'
   :paid_recipient_text: 'Send the secret link via email'
 :limits:
-  :create_secret: 25
+  :create_secret: 100
   :create_account: 3
   :update_account: 5
-  :email_recipient: 5
+  :email_recipient: 10
   :send_feedback: 3
   :authenticate_session: 5
-  :homepage: 25
-  :dashboard: 50
+  :homepage: 100
+  :dashboard: 100
   :failed_passphrase: 5
+  :show_metadata: 200
+  :show_secret: 100
+  :burn_secret: 100
 #:split_tests:
 #  :initial_pricing:
 #    - - basic_v1
